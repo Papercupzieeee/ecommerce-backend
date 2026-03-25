@@ -34,6 +34,7 @@ function isExpired(createdAt) {
 app.post('/signup', (req, res) => {
 
   const { email, password, district } = req.body;
+  console.log("SIGNUP BODY:", req.body); 
 
   if (!email || !password || !district)
     return res.json({ success: false, message: 'All fields required' });
@@ -66,31 +67,55 @@ app.post('/signup', (req, res) => {
 app.post('/login', (req, res) => {
 
   const { email, password } = req.body;
+  console.log("LOGIN BODY:", req.body);
 
-  if (!email || !password)
-    return res.json({ success: false, message: 'All fields required' });
+  // check empty fields
+  if (!email || !password) {
+    return res.json({
+      success: false,
+      message: 'All fields required'
+    });
+  }
 
-  db.query('SELECT * FROM users WHERE email=?', [email], (err, result) => {
+  // check user in DB
+  db.query(
+    'SELECT * FROM users WHERE email=?',
+    [email],
+    (err, result) => {
 
-    if (err)
-      return res.status(500).json({ success: false, message: err.message });
+      if (err) {
+        return res.status(500).json({
+          success: false,
+          message: err.message
+        });
+      }
 
-    if (result.length === 0 || result[0].password !== password)
-      return res.json({ success: false, message: 'Invalid credentials' });
+      // user not found
+      if (result.length === 0) {
+        return res.json({
+          success: false,
+          message: 'User not found'
+        });
+      }
 
-    
-    res.json({
-  success: true,
-  message: 'Login successful',
-  userId: result[0].id,
-  district: result[0].district   
+      // password check
+      if (result[0].password !== password) {
+        return res.json({
+          success: false,
+          message: 'Invalid password'
+        });
+      }
+
+      // success
+      res.json({
+        success: true,
+        message: 'Login successful',
+        userId: result[0].id,
+        district: result[0].district
+      });
+    }
+  );
 });
-
-  });
-});
-/* =========================
-   CREATE GROUP
-========================= */
 
 app.post('/create-group', (req, res) => {
 
@@ -431,7 +456,14 @@ app.delete("/api/delete-order/:orderId", (req, res) => {
         res.json({ success: true, message: "Order deleted successfully" });
     });
 });
-
+db.getConnection((err, connection) => {
+  if (err) {
+    console.log("❌ DB Connection Failed:", err);
+  } else {
+    console.log("✅ DB Connected Successfully");
+    connection.release();
+  }
+});
 /* =========================
    START SERVER
 ========================= */
