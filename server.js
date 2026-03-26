@@ -1,5 +1,5 @@
 const express = require('express');
-const mysql = require('mysql2');
+const { Pool } = require('pg');
 const cors = require('cors');
 require('dotenv').config();
 
@@ -11,463 +11,335 @@ app.use(express.json());
    DATABASE CONNECTION
 ========================= */
 
-const db = mysql.createPool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME
+
+
+const db = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }  // required for Supabase
 });
 
+// Test DB connection
+(async () => {
+  try {
+    const res = await db.query('SELECT NOW()');
+    console.log('✅ DB Connected Successfully', res.rows[0]);
+  } catch (err) {
+    console.error('❌ DB Connection Failed:', err);
+  }
+})();
 /* =========================
    HELPER FUNCTION
 ========================= */
 
 function isExpired(createdAt) {
   const created = new Date(createdAt).getTime();
-  return Date.now() - created > 2 * 60 * 60 * 1000;
+  return Date.now() - created > 2 * 60 * 60 * 1000; // 2 hours
 }
 
 /* =========================
    SIGNUP
 ========================= */
 
-app.post('/signup', (req, res) => {
+app.post('/signup', async (req, res) => {
+  try {
+    const { email, password, district } = req.body;
+    if (!email || !password || !district)
+      return res.json({ success: false, message: 'All fields required' });
 
-  const { email, password, district } = req.body;
-  console.log("SIGNUP BODY:", req.body); 
+    const existingUser = await db.query('SELECT id FROM users WHERE email=$1', [email]);
 
-  if (!email || !password || !district)
-    return res.json({ success: false, message: 'All fields required' });
-
-  db.query('SELECT id FROM users WHERE email=?', [email], (err, result) => {
-
-    if (err)
-      return res.status(500).json({ success: false, message: err.message });
-
-    if (result.length > 0)
+    if (existingUser.rows.length > 0)
       return res.json({ success: false, message: 'Email already exists' });
 
-    db.query(
-      'INSERT INTO users (email, password, district) VALUES (?, ?, ?)',
-      [email, password, district],
-      err => {
-
-        if (err)
-          return res.status(500).json({ success: false, message: err.message });
-
-        res.json({ success: true, message: 'Signup successful' });
-      }
+    await db.query(
+      'INSERT INTO users (email, password, district) VALUES ($1, $2, $3)',
+      [email, password, district]
     );
-  });
+
+    res.json({ success: true, message: 'Signup successful' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
 });
+
 /* =========================
    LOGIN
 ========================= */
 
-app.post('/login', (req, res) => {
+app.post('/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password)
+      return res.json({ success: false, message: 'All fields required' });
 
-  const { email, password } = req.body;
-  console.log("LOGIN BODY:", req.body);
+    const result = await db.query('SELECT * FROM users WHERE email=$1', [email]);
 
-  // check empty fields
-  if (!email || !password) {
-    return res.json({
-      success: false,
-      message: 'All fields required'
+    if (result.rows.length === 0)
+      return res.json({ success: false, message: 'User not found' });
+
+    const user = result.rows[0];
+    if (user.password !== password)
+      return res.json({ success: false, message: 'Invalid password' });
+
+    res.json({
+      success: true,
+      message: 'Login successful',
+      userId: user.id,
+      district: user.district
     });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
   }
-
-  // check user in DB
-  db.query(
-    'SELECT * FROM users WHERE email=?',
-    [email],
-    (err, result) => {
-
-      if (err) {
-        return res.status(500).json({
-          success: false,
-          message: err.message
-        });
-      }
-
-      // user not found
-      if (result.length === 0) {
-        return res.json({
-          success: false,
-          message: 'User not found'
-        });
-      }
-
-      // password check
-      if (result[0].password !== password) {
-        return res.json({
-          success: false,
-          message: 'Invalid password'
-        });
-      }
-
-      // success
-      res.json({
-        success: true,
-        message: 'Login successful',
-        userId: result[0].id,
-        district: result[0].district
-      });
-    }
-  );
 });
 
-app.post('/create-group', (req, res) => {
+/* =========================
+   CREATE GROUP
+========================= */
 
+app.post('/create-group', async (req, res) => {
+  try {
     const { productId, productName, productPrice, userId } = req.body;
 
-    const checkSql = `
-        SELECT * FROM group_buys 
-        WHERE product_id = ? 
-        AND status = 'pending'
-        AND created_by = ?   -- ⭐ IMPORTANT
-        AND created_at >= NOW() - INTERVAL 2 HOUR
-        LIMIT 1
-    `;
+    const checkResult = await db.query(
+      `SELECT * FROM group_buys 
+       WHERE product_id = $1 
+       AND status = 'pending'
+       AND created_by = $2
+       AND created_at >= NOW() - INTERVAL '2 hours'
+       LIMIT 1`,
+      [productId, userId]
+    );
 
-    db.query(checkSql, [productId, userId], (err, result) => {
+    if (checkResult.rows.length > 0)
+      return res.json({ success: true, groupId: checkResult.rows[0].id });
 
-        if (result.length > 0) {
-            return res.json({
-                success: true,
-                groupId: result[0].id
-            });
-        }
+    const insertResult = await db.query(
+      `INSERT INTO group_buys
+       (product_id, product_name, product_price, created_at, status, created_by)
+       VALUES ($1, $2, $3, NOW(), 'pending', $4) RETURNING id`,
+      [productId, productName, productPrice, userId]
+    );
 
-        const insertSql = `
-            INSERT INTO group_buys 
-            (product_id, product_name, product_price, created_at, status, created_by)
-            VALUES (?, ?, ?, NOW(), 'pending', ?)
-        `;
-
-        db.query(insertSql, [productId, productName, productPrice, userId], (err, insertResult) => {
-
-            res.json({
-                success: true,
-                groupId: insertResult.insertId
-            });
-        });
-
-    });
+    res.json({ success: true, groupId: insertResult.rows[0].id });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
 });
+
 /* =========================
    JOIN GROUP
 ========================= */
 
-app.post('/join-group', (req, res) => {
+app.post('/join-group', async (req, res) => {
+  try {
+    const { groupId, memberName, deviceId, userId } = req.body;
+    if (!groupId || !memberName || !deviceId)
+      return res.json({ success: false, message: 'All fields required' });
 
-  const { groupId, memberName, deviceId, userId } = req.body;
-
-  if (!groupId || !memberName || !deviceId)
-    return res.json({ success: false, message: 'All fields required' });
-
-  // ✅ USE id NOT group_id
-  db.query('SELECT * FROM group_buys WHERE id=?', [groupId], (err, result) => {
-
-    if (err)
-      return res.status(500).json({ success: false, message: err.message });
-
-    if (result.length === 0)
+    const groupRes = await db.query('SELECT * FROM group_buys WHERE id=$1', [groupId]);
+    if (groupRes.rows.length === 0)
       return res.json({ success: false, message: 'Group not found' });
 
-    const group = result[0];
-
-    if (group.status !== 'pending')
-      return res.json({ success: false, message: 'Group closed' });
-
+    const group = groupRes.rows[0];
+    if (group.status !== 'pending') return res.json({ success: false, message: 'Group closed' });
     if (isExpired(group.created_at)) {
-
-      db.query("UPDATE group_buys SET status='expired' WHERE id=?", [groupId]);
-
+      await db.query("UPDATE group_buys SET status='expired' WHERE id=$1", [groupId]);
       return res.json({ success: false, message: 'Group expired' });
     }
 
-    // Device check
-    db.query(
-      'SELECT id FROM group_members WHERE group_id=? AND device_id=?',
-      [groupId, deviceId],
-      (err, deviceCheck) => {
-
-        if (err)
-          return res.status(500).json({ success: false, message: err.message });
-
-        if (deviceCheck.length > 0)
-          return res.json({ success: false, message: 'Already joined from this device' });
-
-        // Name check
-        db.query(
-          'SELECT id FROM group_members WHERE group_id=? AND member_name=?',
-          [groupId, memberName],
-          (err, nameCheck) => {
-
-            if (err)
-              return res.status(500).json({ success: false, message: err.message });
-
-            if (nameCheck.length > 0)
-              return res.json({ success: false, message: 'Name already joined' });
-
-            // Insert member
-            db.query(
-              `INSERT INTO group_members 
-              (group_id, member_name, device_id, user_id, joined_at) 
-              VALUES (?, ?, ?, ?, NOW())`,
-              [groupId, memberName, deviceId, userId],
-              err => {
-
-                if (err)
-                  return res.status(500).json({ success: false, message: err.message });
-
-                // Count members
-                db.query(
-                  'SELECT COUNT(*) AS count FROM group_members WHERE group_id=?',
-                  [groupId],
-                  (err, countResult) => {
-
-                    if (err)
-                      return res.status(500).json({ success: false, message: err.message });
-
-                    const count = countResult[0].count;
-
-                    if (count >= 3) {
-                      db.query(
-                        "UPDATE group_buys SET status='success' WHERE id=?",
-                        [groupId]
-                      );
-                    }
-
-                    res.json({ success: true, members: count });
-                  }
-                );
-              }
-            );
-          }
-        );
-      }
+    const deviceCheck = await db.query(
+      'SELECT id FROM group_members WHERE group_id=$1 AND device_id=$2',
+      [groupId, deviceId]
     );
-  });
+    if (deviceCheck.rows.length > 0)
+      return res.json({ success: false, message: 'Already joined from this device' });
+
+    const nameCheck = await db.query(
+      'SELECT id FROM group_members WHERE group_id=$1 AND member_name=$2',
+      [groupId, memberName]
+    );
+    if (nameCheck.rows.length > 0)
+      return res.json({ success: false, message: 'Name already joined' });
+
+    await db.query(
+      `INSERT INTO group_members 
+       (group_id, member_name, device_id, user_id, joined_at)
+       VALUES ($1, $2, $3, $4, NOW())`,
+      [groupId, memberName, deviceId, userId]
+    );
+
+    const countResult = await db.query(
+      'SELECT COUNT(*) FROM group_members WHERE group_id=$1',
+      [groupId]
+    );
+    const count = parseInt(countResult.rows[0].count);
+
+    if (count >= 3) {
+      await db.query("UPDATE group_buys SET status='success' WHERE id=$1", [groupId]);
+    }
+
+    res.json({ success: true, members: count });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
 });
 
 /* =========================
    GROUP STATUS
 ========================= */
 
-app.get('/group-status/:groupId', (req, res) => {
+app.get('/group-status/:groupId', async (req, res) => {
+  try {
+    const groupId = req.params.groupId;
 
-  const groupId = req.params.groupId;
+    const groupRes = await db.query('SELECT * FROM group_buys WHERE id=$1', [groupId]);
+    if (groupRes.rows.length === 0)
+      return res.json({ success: false, message: 'Group not found' });
 
-  db.query(
-    'SELECT * FROM group_buys WHERE id=?',
-    [groupId],
-    (err, groupResult) => {
-
-      if (err)
-        return res.status(500).json({ success: false, message: err.message });
-
-      if (groupResult.length === 0)
-        return res.json({ success: false, message: 'Group not found' });
-
-      const group = groupResult[0];
-
-      if (isExpired(group.created_at) && group.status === 'pending') {
-
-        db.query(
-          "UPDATE group_buys SET status='expired' WHERE id=?",
-          [groupId]
-        );
-
-        group.status = 'expired';
-      }
-
-      db.query(
-        'SELECT member_name FROM group_members WHERE group_id=?',
-        [groupId],
-        (err, membersResult) => {
-
-          if (err)
-            return res.status(500).json({ success: false, message: err.message });
-
-          res.json({
-            success: true,
-            group: {
-              ...group,
-              members: membersResult.map(m => ({
-                member_name: m.member_name
-              }))
-            }
-          });
-        }
-      );
-    }
-  );
-});
-
-app.post("/api/place-order", (req, res) => {
-
-    const { userId, cartItems, isGroupBuy } = req.body;
-
-    if (!userId || !cartItems || cartItems.length === 0) {
-        return res.json({ success: false, message: "Missing fields" });
+    let group = groupRes.rows[0];
+    if (isExpired(group.created_at) && group.status === 'pending') {
+      await db.query("UPDATE group_buys SET status='expired' WHERE id=$1", [groupId]);
+      group.status = 'expired';
     }
 
-    db.query(
-        "SELECT district FROM users WHERE id = ?",
-        [userId],
-        (err, userResult) => {
-
-            if (err || userResult.length === 0) {
-                return res.json({ success: false, message: "User not found" });
-            }
-
-            const userDistrict = userResult[0].district;
-
-            db.query(
-                "SELECT * FROM coupons WHERE LOWER(district)=LOWER(?) AND is_active=1",
-                [userDistrict],
-                (err, couponResult) => {
-
-                    let discountType = null;
-                    let discountValue = 0;
-
-                    if (!err && couponResult.length > 0) {
-                        discountType = couponResult[0].discount_type;
-                        discountValue = Number(couponResult[0].discount_value);
-                    }
-
-                    let completed = 0;
-
-                    cartItems.forEach(item => {
-
-                        let quantity = Number(item.quantity);
-                        let price = Number(item.price);
-
-                        let originalTotal = price * quantity;
-                        let districtDiscount = 0;
-                        let groupDiscount = 0;
-                        let finalPrice = originalTotal;
-
-                        // 🎯 District Coupon
-                        if (discountType === "percentage") {
-                            districtDiscount = (originalTotal * discountValue) / 100;
-                        }
-
-                        if (discountType === "flat") {
-                            districtDiscount = discountValue;
-                        }
-
-                        finalPrice -= districtDiscount;
-
-                        // 🎯 GroupBuy Discount (Example: 5%)
-                        if (isGroupBuy) {
-                            groupDiscount = (finalPrice * 5) / 100;
-                            finalPrice -= groupDiscount;
-                        }
-
-                        if (finalPrice < 0) finalPrice = 0;
-
-                        db.query(
-                            `INSERT INTO orders
-                            (user_id, product_id, quantity,
-                             original_price, district_discount,
-                             group_discount, total_price,
-                             is_groupbuy, status, order_date)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Placed', NOW())`,
-                            [
-                                userId,
-                                item.productId,
-                                quantity,
-                                originalTotal,
-                                districtDiscount,
-                                groupDiscount,
-                                finalPrice,
-                                isGroupBuy ? 1 : 0
-                            ],
-                            () => {
-
-                                completed++;
-
-                                if (completed === cartItems.length) {
-                                    res.json({ success: true });
-                                }
-                            }
-                        );
-
-                    });
-
-                }
-            );
-
-        }
+    const membersRes = await db.query(
+      'SELECT member_name FROM group_members WHERE group_id=$1',
+      [groupId]
     );
-});
-app.get("/api/my-orders/:userId", (req, res) => {
 
-    const userId = req.params.userId;
-
-    db.query(
-    `SELECT 
-        orders.id,
-        orders.quantity,
-        orders.total_price,
-        orders.status,
-        orders.order_date,
-        orders.is_groupbuy,
-        products.product_name,
-        products.image_url
-     FROM orders
-     LEFT JOIN products 
-        ON orders.product_id = products.id
-     WHERE orders.user_id = ?
-     ORDER BY orders.order_date DESC`,
-    [userId],
-    (err, results) => {
-
-        if (err) {
-            console.log(err);
-            return res.json({ success: false });
-        }
-
-        res.json({
-            success: true,
-            orders: results
-        });
-
+    res.json({
+      success: true,
+      group: {
+        ...group,
+        members: membersRes.rows.map(m => ({ member_name: m.member_name }))
+      }
     });
-
-});
-// DELETE ORDER
-app.delete("/api/delete-order/:orderId", (req, res) => {
-    const orderId = req.params.orderId;
-
-    db.query("DELETE FROM orders WHERE id = ?", [orderId], (err, result) => {
-        if (err) {
-            console.log("DELETE ORDER ERROR:", err);
-            return res.json({ success: false, message: "Server error" });
-        }
-
-        if (result.affectedRows === 0) {
-            return res.json({ success: false, message: "Order not found" });
-        }
-
-        res.json({ success: true, message: "Order deleted successfully" });
-    });
-});
-db.getConnection((err, connection) => {
-  if (err) {
-    console.log("❌ DB Connection Failed:", err);
-  } else {
-    console.log("✅ DB Connected Successfully");
-    connection.release();
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
   }
 });
+
+/* =========================
+   PLACE ORDER
+========================= */
+
+app.post("/api/place-order", async (req, res) => {
+  try {
+    const { userId, cartItems, isGroupBuy } = req.body;
+    if (!userId || !cartItems || cartItems.length === 0)
+      return res.json({ success: false, message: "Missing fields" });
+
+    const userRes = await db.query('SELECT district FROM users WHERE id=$1', [userId]);
+    if (userRes.rows.length === 0)
+      return res.json({ success: false, message: "User not found" });
+
+    const userDistrict = userRes.rows[0].district;
+    const couponRes = await db.query(
+      "SELECT * FROM coupons WHERE LOWER(district)=LOWER($1) AND is_active=1",
+      [userDistrict]
+    );
+
+    let discountType = null, discountValue = 0;
+    if (couponRes.rows.length > 0) {
+      discountType = couponRes.rows[0].discount_type;
+      discountValue = Number(couponRes.rows[0].discount_value);
+    }
+
+    for (let item of cartItems) {
+      let quantity = Number(item.quantity);
+      let price = Number(item.price);
+
+      let originalTotal = price * quantity;
+      let districtDiscount = 0;
+      let groupDiscount = 0;
+      let finalPrice = originalTotal;
+
+      if (discountType === "percentage") districtDiscount = (originalTotal * discountValue) / 100;
+      if (discountType === "flat") districtDiscount = discountValue;
+      finalPrice -= districtDiscount;
+
+      if (isGroupBuy) {
+        groupDiscount = (finalPrice * 5) / 100;
+        finalPrice -= groupDiscount;
+      }
+      if (finalPrice < 0) finalPrice = 0;
+
+      await db.query(
+        `INSERT INTO orders
+         (user_id, product_id, quantity, original_price, district_discount, group_discount, total_price, is_groupbuy, status, order_date)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'Placed',NOW())`,
+        [userId, item.productId, quantity, originalTotal, districtDiscount, groupDiscount, finalPrice, isGroupBuy ? 1 : 0]
+      );
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+/* =========================
+   GET MY ORDERS
+========================= */
+
+app.get("/api/my-orders/:userId", async (req, res) => {
+  try {
+    const userId = req.params.userId;
+
+    const results = await db.query(
+      `SELECT 
+         orders.id,
+         orders.quantity,
+         orders.total_price,
+         orders.status,
+         orders.order_date,
+         orders.is_groupbuy,
+         products.product_name,
+         products.image_url
+       FROM orders
+       LEFT JOIN products ON orders.product_id = products.id
+       WHERE orders.user_id=$1
+       ORDER BY orders.order_date DESC`,
+      [userId]
+    );
+
+    res.json({ success: true, orders: results.rows });
+  } catch (err) {
+    res.status(500).json({ success: false });
+  }
+});
+
+/* =========================
+   DELETE ORDER
+========================= */
+
+app.delete("/api/delete-order/:orderId", async (req, res) => {
+  try {
+    const orderId = req.params.orderId;
+    const result = await db.query('DELETE FROM orders WHERE id=$1', [orderId]);
+
+    if (result.rowCount === 0)
+      return res.json({ success: false, message: "Order not found" });
+
+    res.json({ success: true, message: "Order deleted successfully" });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+/* =========================
+   TEST DB CONNECTION
+========================= */
+
+db.connect()
+  .then(() => console.log("✅ DB Connected Successfully"))
+  .catch(err => console.log("❌ DB Connection Failed:", err));
+
 /* =========================
    START SERVER
 ========================= */
 
-app.listen(process.env.PORT, () => {
-  console.log(`🚀 Server running at http://localhost:${process.env.PORT}`);
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`🚀 Server running at http://localhost:${PORT}`);
 });
