@@ -296,45 +296,58 @@ app.post("/api/place-order", async (req, res) => {
 
     for (let item of cartItems) {
 
-      let quantity = Number(item.quantity);
-      let price = Number(item.price);
+  let quantity = Number(item.quantity);
+  let price = Number(item.price);
 
-      let originalTotal = price * quantity;
-      let districtDiscount = 0;
-      let groupDiscount = 0;
-      let finalPrice = originalTotal;
+  let originalTotal = price * quantity;
+  let districtDiscount = 0;
+  let groupDiscount = 0;
+  let finalPrice = originalTotal;
 
-      if (discountType === "percentage")
-        districtDiscount = (originalTotal * discountValue) / 100;
+  if (discountType === "percentage")
+    districtDiscount = (originalTotal * discountValue) / 100;
 
-      if (discountType === "flat")
-        districtDiscount = discountValue;
+  if (discountType === "flat")
+    districtDiscount = discountValue;
 
-      finalPrice -= districtDiscount;
+  finalPrice -= districtDiscount;
 
-      if (isGroupBuy) {
-        groupDiscount = (finalPrice * 5) / 100;
-        finalPrice -= groupDiscount;
-      }
+  if (isGroupBuy) {
+    groupDiscount = (finalPrice * 5) / 100;
+    finalPrice -= groupDiscount;
+  }
 
-      if (finalPrice < 0) finalPrice = 0;
+  if (finalPrice < 0) finalPrice = 0;
 
-      await db.query(
-        `INSERT INTO orders
-         (user_id, product_id, quantity, original_price, district_discount, group_discount, total_price, is_groupbuy, status, order_date)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'Placed',NOW())`,
-        [
-          userId,
-          item.productId,
-          quantity,
-          originalTotal,
-          districtDiscount,
-          groupDiscount,
-          finalPrice,
-          isGroupBuy   // ✅ FIXED
-        ]
-      );
-    }
+  await db.query(
+    `INSERT INTO orders
+     (user_id, product_id, quantity, original_price, district_discount, group_discount, total_price, is_groupbuy, status, order_date)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'Placed',NOW())`,
+    [
+      userId,
+      item.productId,
+      quantity,
+      originalTotal,
+      districtDiscount,
+      groupDiscount,
+      finalPrice,
+      isGroupBuy
+    ]
+  );
+}
+
+/* ✅ ADD THIS HERE (IMPORTANT) */
+if (isGroupBuy) {
+
+  await db.query(
+    `UPDATE group_buys 
+     SET status='completed' 
+     WHERE created_by=$1 
+     AND status='success'`,
+    [userId]
+  );
+
+}
 
     res.json({ success: true });
 
