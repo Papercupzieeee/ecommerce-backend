@@ -106,36 +106,54 @@ app.post('/login', async (req, res) => {
    CREATE GROUP
 ========================= */
 
-app.post('/create-group', async (req, res) => {
-  try {
+app.post("/create-group", (req, res) => {
+
     const { productId, productName, productPrice, userId } = req.body;
 
-    const checkResult = await db.query(
-      `SELECT * FROM group_buys 
-       WHERE product_id = $1 
-       AND status = 'pending'
-       AND created_by = $2
-       AND created_at >= NOW() - INTERVAL '2 hours'
-       LIMIT 1`,
-      [productId, userId]
-    );
+    const groupId = "group-" + Date.now();
 
-    if (checkResult.rows.length > 0)
-      return res.json({ success: true, groupId: checkResult.rows[0].id });
+    const query = `
+        INSERT INTO group_buys 
+        (group_id, product_name, product_price, product_id, created_at, status, created_by)
+        VALUES (?, ?, ?, ?, NOW(), 'pending', ?)
+    `;
 
-    const insertResult = await db.query(
-      `INSERT INTO group_buys
-       (product_id, product_name, product_price, created_at, status, created_by)
-       VALUES ($1, $2, $3, NOW(), 'pending', $4)
-       RETURNING id`,
-      [productId, productName, productPrice, userId]
-    );
+    db.query(query, [groupId, productName, productPrice, productId, userId], (err) => {
+        if (err) {
+            console.log(err);
+            return res.json({ success: false });
+        }
 
-    res.json({ success: true, groupId: insertResult.rows[0].id });
+        res.json({
+            success: true,
+            groupId
+        });
+    });
 
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
+});
+/* =========================
+   GET ALL ACTIVE GROUPS
+========================= */
+app.get("/all-groups", (req, res) => {
+
+    const query = `
+        SELECT * FROM group_buys 
+        WHERE status = 'pending'
+        ORDER BY created_at DESC
+    `;
+
+    db.query(query, (err, results) => {
+        if (err) {
+            console.log(err);
+            return res.json({ success: false });
+        }
+
+        res.json({
+            success: true,
+            groups: results
+        });
+    });
+
 });
 
 /* =========================
