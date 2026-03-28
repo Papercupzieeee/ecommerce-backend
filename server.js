@@ -115,54 +115,49 @@ app.post('/create-group', async (req, res) => {
 ========================= */
 app.post('/join-group', async (req, res) => {
   try {
-    const { groupId, memberName, deviceId, userId } = req.body;
-    if (!groupId || !memberName || !deviceId || !userId)
+    console.log("JOIN BODY:", req.body);
+
+    const { group_id, memberName } = req.body;
+
+    if (!group_id || !memberName) {
       return res.json({ success: false, message: 'All fields required' });
-
-    const groupRes = await db.query('SELECT * FROM group_buys WHERE group_id=$1', [groupId]);
-    if (groupRes.rows.length === 0)
-      return res.json({ success: false, message: 'Group not found' });
-
-    const group = groupRes.rows[0];
-    if (group.status !== 'pending') return res.json({ success: false, message: 'Group closed' });
-
-    if (isExpired(group.created_at)) {
-      await db.query("UPDATE group_buys SET status='expired' WHERE group_id=$1", [groupId]);
-      return res.json({ success: false, message: 'Group expired' });
     }
 
-    // Duplicate device or name check
-    const deviceCheck = await db.query(
-      'SELECT id FROM group_members WHERE group_id=$1 AND device_id=$2',
-      [groupId, deviceId]
-    );
-    if (deviceCheck.rows.length > 0) return res.json({ success: false, message: 'Already joined from this device' });
+    const name = memberName.trim();
 
     const nameCheck = await db.query(
       'SELECT id FROM group_members WHERE group_id=$1 AND member_name=$2',
-      [groupId, memberName]
+      [group_id, name]
     );
-    if (nameCheck.rows.length > 0) return res.json({ success: false, message: 'Name already joined' });
 
-    // Add member
+    if (nameCheck.rows.length > 0) {
+      return res.json({ success: false, message: 'Name already joined' });
+    }
+
     await db.query(
-      `INSERT INTO group_members
-       (group_id, member_name, device_id, user_id, joined_at)
-       VALUES ($1, $2, $3, $4, NOW())`,
-      [groupId, memberName, deviceId, userId]
+      `INSERT INTO group_members (group_id, member_name, user_id, joined_at)
+       VALUES ($1, $2, $3, NOW())`,
+      [group_id, name, null]
     );
 
-    // Count members
-    const countResult = await db.query('SELECT COUNT(*) AS count FROM group_members WHERE group_id=$1', [groupId]);
-    const count = parseInt(countResult.rows[0].count);
+    const countRes = await db.query(
+      'SELECT COUNT(*) FROM group_members WHERE group_id=$1',
+      [group_id]
+    );
+
+    const count = parseInt(countRes.rows[0].count);
 
     if (count >= 3) {
-      await db.query("UPDATE group_buys SET status='success' WHERE group_id=$1", [groupId]);
+      await db.query(
+        "UPDATE group_buys SET status='success' WHERE group_id=$1",
+        [group_id]
+      );
     }
 
     res.json({ success: true, members: count });
+
   } catch (err) {
-    console.error(err);
+    console.error("JOIN ERROR:", err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
