@@ -88,36 +88,28 @@ app.post('/login', async (req, res) => {
 /* =========================
    CREATE GROUP
 ========================= */
+/* =========================
+   CREATE GROUP
+========================= */
 app.post('/create-group', async (req, res) => {
   try {
     const { productId, productName, productPrice, userId } = req.body;
     if (!productId || !productName || !productPrice || !userId)
       return res.json({ success: false, message: 'All fields required' });
 
-    const groupId = 'group-' + Date.now();
-
-    await db.query(
+    // Use RETURNING id to get the auto-increment group id
+    const result = await db.query(
       `INSERT INTO group_buys
-       (group_id, product_name, product_price, product_id, created_at, status, created_by)
-       VALUES ($1, $2, $3, $4, NOW(), 'pending', $5)`,
-      [groupId, productName, productPrice, productId, userId]
+       (product_name, product_price, product_id, created_at, status, created_by)
+       VALUES ($1, $2, $3, NOW(), 'pending', $4)
+       RETURNING id`,
+      [productName, productPrice, productId, userId]
     );
 
-    res.json({ success: true, groupId });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
+    const groupId = result.rows[0].id; // integer id
+    const displayGroupId = 'group-' + groupId; // for UI
 
-/* =========================
-   GET ALL ACTIVE GROUPS
-========================= */
-app.get('/all-groups', async (req, res) => {
-  try {
-    const results = await db.query(
-      "SELECT * FROM group_buys WHERE status='pending' ORDER BY created_at DESC"
-    );
-    res.json({ success: true, groups: results.rows });
+    res.json({ success: true, groupId, displayGroupId });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -128,11 +120,12 @@ app.get('/all-groups', async (req, res) => {
 ========================= */
 app.post('/join-group', async (req, res) => {
   try {
-    const { groupId, memberName, deviceId, userId } = req.body;
+    const { groupId, memberName, deviceId, userId } = req.body; 
     if (!groupId || !memberName || !deviceId)
       return res.json({ success: false, message: 'All fields required' });
 
-    const groupRes = await db.query('SELECT * FROM group_buys WHERE group_id=$1', [groupId]);
+    // groupId should now be integer
+    const groupRes = await db.query('SELECT * FROM group_buys WHERE id=$1', [groupId]);
     if (groupRes.rows.length === 0)
       return res.json({ success: false, message: 'Group not found' });
 
@@ -141,7 +134,7 @@ app.post('/join-group', async (req, res) => {
       return res.json({ success: false, message: 'Group closed' });
 
     if (isExpired(group.created_at)) {
-      await db.query("UPDATE group_buys SET status='expired' WHERE group_id=$1", [groupId]);
+      await db.query("UPDATE group_buys SET status='expired' WHERE id=$1", [groupId]);
       return res.json({ success: false, message: 'Group expired' });
     }
 
@@ -173,7 +166,7 @@ app.post('/join-group', async (req, res) => {
     const count = parseInt(countResult.rows[0].count);
 
     if (count >= 3) {
-      await db.query("UPDATE group_buys SET status='success' WHERE group_id=$1", [groupId]);
+      await db.query("UPDATE group_buys SET status='success' WHERE id=$1", [groupId]);
     }
 
     res.json({ success: true, members: count });
@@ -181,6 +174,21 @@ app.post('/join-group', async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 });
+/* =========================
+   GET ALL ACTIVE GROUPS
+========================= */
+app.get('/all-groups', async (req, res) => {
+  try {
+    const results = await db.query(
+      "SELECT * FROM group_buys WHERE status='pending' ORDER BY created_at DESC"
+    );
+    res.json({ success: true, groups: results.rows });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+
 
 /* =========================
    GROUP STATUS
