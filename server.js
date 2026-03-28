@@ -95,12 +95,12 @@ app.post('/create-group', async (req, res) => {
 
     // Insert and return auto-generated group_id
     const result = await db.query(
-      `INSERT INTO group_buys
-       (product_id, product_name, product_price, created_at, status, created_by)
-       VALUES ($1, $2, $3, NOW(), 'pending', $4)
-       RETURNING group_id`,
-      [productId, productName, productPrice, userId]
-    );
+  `INSERT INTO group_buys
+   (product_id, product_name, product_price, created_at, status, created_by)
+   VALUES ($1, $2, $3, NOW(), 'pending', $4)
+   RETURNING group_id`,
+  [productId, productName, productPrice, userId]
+);
 
     const groupId = result.rows[0].group_id;
     res.json({ success: true, groupId });
