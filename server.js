@@ -94,19 +94,80 @@ app.post('/create-group', async (req, res) => {
     if (!productId || !productName || !productPrice || !userId)
       return res.json({ success: false, message: 'All fields required' });
 
-    // PostgreSQL INSERT with RETURNING
     const result = await db.query(
       `INSERT INTO group_buys
-       (product_name, product_price, product_id, created_at, status, created_by)
+       (product_id, product_name, product_price, created_at, status, created_by)
        VALUES ($1, $2, $3, NOW(), 'pending', $4)
        RETURNING group_id`,
-      [productName, productPrice, productId, userId]
+      [productId, productName, productPrice, userId]
     );
 
     const groupId = result.rows[0].group_id;
     res.json({ success: true, groupId });
   } catch (err) {
     console.error('Create Group Error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+/* =========================
+   JOIN GROUP
+========================= */
+app.post('/join-group', async (req, res) => {
+  try {
+    const { groupId, memberName, deviceId, userId } = req.body;
+    if (!groupId || !memberName || !deviceId || !userId)
+      return res.json({ success: false, message: 'All fields required' });
+
+    // Check if group exists
+    const groupRes = await db.query('SELECT * FROM group_buys WHERE group_id=$1', [groupId]);
+    if (groupRes.rows.length === 0) return res.json({ success: false, message: 'Group not found' });
+
+    const group = groupRes.rows[0];
+    if (group.status !== 'pending') return res.json({ success: false, message: 'Group closed' });
+
+    // Check expiration (2 hours)
+    if (isExpired(group.created_at)) {
+      await db.query("UPDATE group_buys SET status='expired' WHERE group_id=$1", [groupId]);
+      return res.json({ success: false, message: 'Group expired' });
+    }
+
+    // Check device & name duplication
+    const deviceCheck = await db.query(
+      'SELECT id FROM group_members WHERE group_id=$1 AND device_id=$2',
+      [groupId, deviceId]
+    );
+    if (deviceCheck.rows.length > 0) return res.json({ success: false, message: 'Already joined from this device' });
+
+    const nameCheck = await db.query(
+      'SELECT id FROM group_members WHERE group_id=$1 AND member_name=$2',
+      [groupId, memberName]
+    );
+    if (nameCheck.rows.length > 0) return res.json({ success: false, message: 'Name already joined' });
+
+    // Add member
+    await db.query(
+      `INSERT INTO group_members
+       (group_id, member_name, device_id, user_id, joined_at)
+       VALUES ($1, $2, $3, $4, NOW())`,
+      [groupId, memberName, deviceId, userId]
+    );
+
+    // Count members
+    const countResult = await db.query(
+      'SELECT COUNT(*) AS count FROM group_members WHERE group_id=$1',
+      [groupId]
+    );
+    const count = parseInt(countResult.rows[0].count);
+
+    // Update group status if full
+    if (count >= 3) {
+      await db.query("UPDATE group_buys SET status='success' WHERE group_id=$1", [groupId]);
+    }
+
+    res.json({ success: true, members: count });
+  } catch (err) {
+    console.error(err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
@@ -126,93 +187,30 @@ app.get('/all-groups', async (req, res) => {
 });
 
 /* =========================
-   JOIN GROUP
-========================= */
-app.post('/join-group', async (req, res) => {
-  try {
-    const { groupId, memberName, deviceId, userId } = req.body;
-    if (!groupId || !memberName || !deviceId)
-      return res.json({ success: false, message: 'All fields required' });
-
-    // Check if group exists
-    const [groupRes] = await db.query('SELECT * FROM group_buys WHERE group_id=?', [groupId]);
-    if (groupRes.length === 0) return res.json({ success: false, message: 'Group not found' });
-
-    const group = groupRes[0];
-    if (group.status !== 'pending') return res.json({ success: false, message: 'Group closed' });
-
-    // Check expiration (2 hours)
-    const createdAt = new Date(group.created_at).getTime();
-    if (Date.now() - createdAt > 2 * 60 * 60 * 1000) {
-      await db.query("UPDATE group_buys SET status='expired' WHERE group_id=?", [groupId]);
-      return res.json({ success: false, message: 'Group expired' });
-    }
-
-    // Check device & name duplication
-    const [deviceCheck] = await db.query(
-      'SELECT id FROM group_members WHERE group_id=? AND device_id=?',
-      [groupId, deviceId]
-    );
-    if (deviceCheck.length > 0) return res.json({ success: false, message: 'Already joined from this device' });
-
-    const [nameCheck] = await db.query(
-      'SELECT id FROM group_members WHERE group_id=? AND member_name=?',
-      [groupId, memberName]
-    );
-    if (nameCheck.length > 0) return res.json({ success: false, message: 'Name already joined' });
-
-    // Add member
-    await db.query(
-      `INSERT INTO group_members
-       (group_id, member_name, device_id, user_id, joined_at)
-       VALUES (?, ?, ?, ?, NOW())`,
-      [groupId, memberName, deviceId, userId]
-    );
-
-    // Count members
-    const [countResult] = await db.query(
-      'SELECT COUNT(*) AS count FROM group_members WHERE group_id=?',
-      [groupId]
-    );
-    const count = countResult[0].count;
-
-    if (count >= 3) {
-      await db.query("UPDATE group_buys SET status='success' WHERE group_id=?", [groupId]);
-    }
-
-    res.json({ success: true, members: count });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-/* =========================
    GROUP STATUS
 ========================= */
 app.get('/group-status/:groupId', async (req, res) => {
   try {
     const { groupId } = req.params;
 
-    const [groupRes] = await db.query('SELECT * FROM group_buys WHERE group_id=?', [groupId]);
-    if (groupRes.length === 0) return res.json({ success: false, message: 'Group not found' });
+    const groupRes = await db.query('SELECT * FROM group_buys WHERE group_id=$1', [groupId]);
+    if (groupRes.rows.length === 0) return res.json({ success: false, message: 'Group not found' });
 
-    let group = groupRes[0];
+    let group = groupRes.rows[0];
 
     // Expiration check
-    const createdAt = new Date(group.created_at).getTime();
-    if (Date.now() - createdAt > 2 * 60 * 60 * 1000 && group.status === 'pending') {
-      await db.query("UPDATE group_buys SET status='expired' WHERE group_id=?", [groupId]);
+    if (isExpired(group.created_at) && group.status === 'pending') {
+      await db.query("UPDATE group_buys SET status='expired' WHERE group_id=$1", [groupId]);
       group.status = 'expired';
     }
 
-    const [membersRes] = await db.query('SELECT member_name FROM group_members WHERE group_id=?', [groupId]);
+    const membersRes = await db.query('SELECT member_name FROM group_members WHERE group_id=$1', [groupId]);
 
     res.json({
       success: true,
       group: {
         ...group,
-        members: membersRes.map(m => ({ member_name: m.member_name }))
+        members: membersRes.rows.map(m => ({ member_name: m.member_name }))
       }
     });
   } catch (err) {
