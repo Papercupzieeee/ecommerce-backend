@@ -94,19 +94,19 @@ app.post('/create-group', async (req, res) => {
     if (!productId || !productName || !productPrice || !userId)
       return res.json({ success: false, message: 'All fields required' });
 
-    // Insert new group; group_id auto-generated
-    const [result] = await db.query(
+    // PostgreSQL INSERT with RETURNING
+    const result = await db.query(
       `INSERT INTO group_buys
        (product_name, product_price, product_id, created_at, status, created_by)
-       VALUES (?, ?, ?, NOW(), 'pending', ?)`,
+       VALUES ($1, $2, $3, NOW(), 'pending', $4)
+       RETURNING group_id`,
       [productName, productPrice, productId, userId]
     );
 
-    const groupId = result.insertId; // auto-generated ID
-
+    const groupId = result.rows[0].group_id;
     res.json({ success: true, groupId });
   } catch (err) {
-    console.error(err);
+    console.error('Create Group Error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
