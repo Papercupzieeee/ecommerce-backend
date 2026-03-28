@@ -133,10 +133,12 @@ app.post('/join-group', async (req, res) => {
       return res.json({ success: false, message: 'All fields required' });
 
     const groupRes = await db.query('SELECT * FROM group_buys WHERE group_id=$1', [groupId]);
-    if (groupRes.rows.length === 0) return res.json({ success: false, message: 'Group not found' });
+    if (groupRes.rows.length === 0)
+      return res.json({ success: false, message: 'Group not found' });
 
     const group = groupRes.rows[0];
-    if (group.status !== 'pending') return res.json({ success: false, message: 'Group closed' });
+    if (group.status !== 'pending')
+      return res.json({ success: false, message: 'Group closed' });
 
     if (isExpired(group.created_at)) {
       await db.query("UPDATE group_buys SET status='expired' WHERE group_id=$1", [groupId]);
@@ -187,7 +189,8 @@ app.get('/group-status/:groupId', async (req, res) => {
   try {
     const { groupId } = req.params;
     const groupRes = await db.query('SELECT * FROM group_buys WHERE group_id=$1', [groupId]);
-    if (groupRes.rows.length === 0) return res.json({ success: false, message: 'Group not found' });
+    if (groupRes.rows.length === 0)
+      return res.json({ success: false, message: 'Group not found' });
 
     let group = groupRes.rows[0];
     if (isExpired(group.created_at) && group.status === 'pending') {
@@ -202,7 +205,10 @@ app.get('/group-status/:groupId', async (req, res) => {
 
     res.json({
       success: true,
-      group: { ...group, members: membersRes.rows.map(m => ({ member_name: m.member_name })) }
+      group: {
+        ...group,
+        members: membersRes.rows.map(m => ({ member_name: m.member_name }))
+      }
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -219,7 +225,8 @@ app.post('/api/place-order', async (req, res) => {
       return res.json({ success: false, message: 'Missing fields' });
 
     const userRes = await db.query('SELECT district FROM users WHERE id=$1', [userId]);
-    if (userRes.rows.length === 0) return res.json({ success: false, message: 'User not found' });
+    if (userRes.rows.length === 0)
+      return res.json({ success: false, message: 'User not found' });
 
     const userDistrict = userRes.rows[0].district;
 
